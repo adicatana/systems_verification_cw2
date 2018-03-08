@@ -1,0 +1,175 @@
+-- Adrian Catana - ac7815
+-- Systems Verification - Coursework 2
+-- NuSMV model checking
+
+-- The cryptographers module
+-- We assume a random configuration of coins
+-- We count a difference in coin/prev_coin as 1
+-- and test the final parity of all the announcements
+MODULE crypto(id, coin, prev_coin, is_payer, prev_ann, next_ann)
+VAR
+  -- Will be initialised
+  announcement : {0, 1};
+  diff_counter : {0, 1, 2, 3};
+  decision : {NSA, crypto_payer};
+ASSIGN
+
+  ---------------------------------------------------
+  -- Both is_payer and the coin equality are the same
+  -- coin = prev_coin  &  is_payer)   -> 1;
+  -- !(coin = prev_coin) & !is_payer) -> 1;
+  ---------------------------------------------------
+  -- is_payer and the coin equality are different
+  -- coin = prev_coin & !is_payer)    -> 0;
+  -- !(coin = prev_coin) & is_payer)  -> 0;
+  ---------------------------------------------------
+  init(announcement) := 
+    toint(!(is_payer xor (coin = prev_coin)));
+  
+  init(diff_counter) := 
+    announcement + prev_ann + next_ann;
+
+  -- This could be removed and used in spec
+  -- Uses the parity of diff_counter
+  init(decision) :=
+    case
+      diff_counter mod 2 = 0 : NSA;
+      TRUE : crypto_payer;
+    esac;
+
+  -- Need to force the initial configuration
+  next(announcement) :=
+    announcement;
+  next(diff_counter) :=
+    diff_counter;
+  next(decision) :=
+    decision;
+
+-- Main environment to randomly choose the payer
+-- and the coins
+MODULE main
+VAR
+  -- Random
+  payer : {1, 2, 3, NSA};
+
+  coin_1 : {HEADS, TAILS};
+  coin_2 : {HEADS, TAILS};
+  coin_3 : {HEADS, TAILS};
+
+  c1 : crypto (1, coin_1, coin_2, payer = 1, c3.announcement, c2.announcement);
+  c2 : crypto (2, coin_2, coin_3, payer = 2, c1.announcement, c3.announcement);
+  c3 : crypto (3, coin_3, coin_1, payer = 3, c2.announcement, c1.announcement);
+
+ASSIGN
+-- Need to force the initial configuration
+  next(payer) :=
+    payer;
+  next(coin_1) :=
+    coin_1;
+  next(coin_2) :=
+    coin_2;
+  next(coin_3) :=
+    coin_3;          
+
+-- An important note about "forcing" the initial configuration
+-- is that init is only executed for the first state.
+-- I have tried to force next to recompute the values, but
+-- I think it is not possible since you have to already know
+-- some values that will be randomly generated in the future.
+
+-- This sanity check could actually be removed because it is redundant
+LTLSPEC
+  G ((!(c1.decision = crypto_payer) & c1.decision = NSA) | (c1.decision = crypto_payer & !(c1.decision = NSA)));
+
+-- Checking the correctness of the program, i.e.
+-- each crypto is correctly showing whether there
+-- was a crypto payer or not.
+SPEC
+  AG(c1.is_payer -> (c2.decision = crypto_payer & c3.decision = crypto_payer));
+SPEC
+  AG(c2.is_payer -> (c1.decision = crypto_payer & c3.decision = crypto_payer));
+SPEC
+  AG(c3.is_payer -> (c2.decision = crypto_payer & c1.decision = crypto_payer));
+SPEC
+  AG(!(c1.is_payer | c2.is_payer | c3.is_payer) -> (c1.decision = NSA & c2.decision = NSA & c3.decision = NSA));
+
+-- There is at most one liar
+SPEC
+  AG(toint(c1.is_payer) + toint(c2.is_payer) + toint(c3.is_payer) <= 1);
+
+-- Check whether the payer (if one exists) is a liar
+SPEC
+  AG(c1.is_payer -> c1.announcement = toint(c1.coin = c1.prev_coin));
+SPEC
+  AG(c2.is_payer -> c2.announcement = toint(c2.coin = c2.prev_coin));
+SPEC
+  AG(c3.is_payer -> c3.announcement = toint(c3.coin = c3.prev_coin));  
+
+-- All the non-payers tell the truth
+SPEC
+  AG(!c1.is_payer -> c1.announcement = 1 - toint(c1.coin = c1.prev_coin));
+SPEC
+  AG(!c2.is_payer -> c2.announcement = 1 - toint(c2.coin = c2.prev_coin));
+SPEC
+  AG(!c3.is_payer -> c3.announcement = 1 - toint(c3.coin = c3.prev_coin));  
+
+-- All SPECs and the LTLSPEC are true, as expected
+
+-- All SPECS from below are intentionally made to be false;
+-- Uncomment for testing -> they will fail, proving that
+-- the system gives the right decision
+--SPEC
+--  EF(c1.is_payer & c2.decision = NSA);
+--SPEC
+--  EF(c2.is_payer & c3.decision = NSA);
+--SPEC
+--  EF(c3.is_payer & c1.decision = NSA);
+
+-- Note: Tried a similar approach to
+-- https://www.sciencedirect.com/science/article/pii/S157106610582609X  
+
+-----------------------------Comments-----------------------------
+-- I had many approaches for this task. The final version of my first
+-- approach was having the decision made in the environment. However,
+-- I considered that it is more natural, given the specification,
+-- that each cryptographer will be able to tell whether NSA was
+-- the payer or not. Also, for the previous implementation each
+-- cryptographer was flipping the coin (choosing the value of coin
+-- randomly) for his own; however, after reading the article above,
+-- I decided to move this in the main environment (main), just
+-- to give more clarity, te overall effect being the same. You can
+-- see a mock implementation of my first version commented below:
+-- MODULE crypto(id, neigh_coin, is_payer)
+-- VAR
+--   coin : {HEADS, TAILS};
+--   announcement : {0, 1};
+-- ASSIGN
+--   init(announcement) := 
+--     toint(!(is_payer xor (coin = neigh_coin)));
+--   next(coin) :=
+--     coin;
+--   next(announcement) :=
+--     announcement;
+-- MODULE main
+-- VAR
+--   payer : {1, 2, 3, NSA};
+--   diff_counter : {0, 1, 2, 3};
+--   decision : {NSA, crypto_payer};
+--   c1 : crypto (1, c2.coin, payer = 1);
+--   c2 : crypto (2, c3.coin, payer = 2);
+--   c3 : crypto (3, c1.coin, payer = 3);
+-- ASSIGN  
+--   init(diff_counter) := 
+--     c1.announcement + c2.announcement + c3.announcement;
+--   init(decision) :=
+--     case
+--       diff_counter mod 2 = 0 : NSA;
+--       TRUE : crypto_payer;
+--     esac;
+--   next(decision) :=
+--     decision;  
+--   next(payer) :=
+--     payer;
+--   next(diff_counter) :=
+--     diff_counter;
+------------------------------------------------------------------
